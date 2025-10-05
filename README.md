@@ -48,4 +48,4 @@ This module is distributed under the MIT License.
 
 ## ❓ Questions, Issues and Feature Requests
 
-If you have questions about this project, find a bug or wish to submit a feature request, please [submit an issue](https://go.innotegrity.dev/xerrors/issues).
+If you have questions about this project, find a bug or wish to submit a feature request, please [submit an issue](https://github.com/innotegrity/go-xerrors/issues).
