@@ -2,9 +2,11 @@ package xerrors
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"runtime"
+	"sync"
 )
 
 const (
@@ -13,11 +15,17 @@ const (
 
 var (
 	_captureCaller = false
+	_callerMutex   sync.Mutex
 )
 
-// CaptureCaller controls whether the caller file and line are captured when an error is generated.
+// CaptureCaller controls whether the caller file and line are captured when a new error is generated.
+//
+// This function enables or disables the capture of the caller information globally for this package.  This call is
+// thread-safe.
 func CaptureCaller(enable bool) {
+	_callerMutex.Lock()
 	_captureCaller = enable
+	_callerMutex.Unlock()
 }
 
 // getCaller is a helper function to fetch caller information for an error.
@@ -44,8 +52,8 @@ type Error interface {
 	// File should return the file where the error was generated.
 	File() string
 
-	// Is should return true if the error code matches the given code, false otherwise.
-	Is(int) bool
+	// Is should return true if the wrapped error inside the object matches the given error, false otherwise.
+	Is(error) bool
 
 	// Line should return the line where the error was generated.
 	Line() int
@@ -55,20 +63,27 @@ type Error interface {
 	// Unlike the Error() method, this function may include additional information such as the caller details or
 	// attributes in any format (eg: plaintext or JSON).
 	String() string
+
+	// WithAttr should add an attribute to the error and return itself.
+	WithAttr(key string, value any) Error
+
+	// WithAttrs should add attributes to the error and return itself.
+	WithAttrs(attrs map[string]any) Error
 }
 
-// Err is a struct that implements the Error interface.
-type Err struct {
+// xerr is a struct that implements the Error interface.
+type xerr struct {
 	// unexported variables
-	attrs   map[string]any // error attributes
-	code    int            // the error code
-	file    string         // the file where the error was generated
-	line    int            // the line where the error was generated
-	message string         // the error message
+	attrs      map[string]any // error attributes
+	code       int            // the error code
+	file       string         // the file where the error was generated
+	line       int            // the line where the error was generated
+	message    string         // the error message
+	wrappedErr error          // the wrapped error, if any
 }
 
-// jsonErr is a version of [Err] that is used to marshal an Err object to JSON.
-type jsonErr struct {
+// jsonXErr is a version of [Err] that is used to marshal an Err object to JSON.
+type jsonXErr struct {
 	// Attrs is a map of attributes associated with the error.
 	Attrs map[string]any `json:"attrs,omitempty"`
 
@@ -85,63 +100,92 @@ type jsonErr struct {
 	Message string `json:"message"`
 }
 
-// New creates a new error with the given code and message.
-func New(code int, message string) *Err {
-	err := &Err{
+// New creates a new [Error] with the given code and message.
+func New(code int, message string) Error {
+	xerr := &xerr{
 		code:    code,
 		message: message,
 	}
 	if _captureCaller {
-		err.file, err.line = getCaller(1)
+		xerr.file, xerr.line = getCaller(1)
 	}
-	return err
+	return xerr
 }
 
-// Newf creates a new error with the given code and formatted message.
-func Newf(code int, format string, args ...any) *Err {
-	err := &Err{
+// Newf creates a new [Error] with the given code and formatted message.
+func Newf(code int, format string, args ...any) Error {
+	xerr := &xerr{
 		code:    code,
 		message: fmt.Sprintf(format, args...),
 	}
 	if _captureCaller {
-		err.file, err.line = getCaller(1)
+		xerr.file, xerr.line = getCaller(1)
 	}
-	return err
+	return xerr
+}
+
+// Wrap wraps the given error in a new [Error] with the given code and message.
+func Wrap(code int, err error, message string) Error {
+	xerr := &xerr{
+		code:       code,
+		message:    message,
+		wrappedErr: err,
+	}
+	if _captureCaller {
+		xerr.file, xerr.line = getCaller(1)
+	}
+	return xerr
+}
+
+// Wrapf wraps the given error in a new [Error] with the given code and formatted message.
+func Wrapf(code int, err error, format string, args ...any) Error {
+	xerr := &xerr{
+		code:       code,
+		message:    fmt.Sprintf(format, args...),
+		wrappedErr: err,
+	}
+	if _captureCaller {
+		xerr.file, xerr.line = getCaller(1)
+	}
+	return xerr
 }
 
 // Attrs returns a map of attributes associated with the error.
-func (e *Err) Attrs() map[string]any {
+func (e *xerr) Attrs() map[string]any {
 	return e.attrs
 }
 
 // Code returns the error code.
-func (e *Err) Code() int {
+func (e *xerr) Code() int {
 	return e.code
 }
 
 // Error returns the error message.
-func (e *Err) Error() string {
+func (e *xerr) Error() string {
 	return e.message
 }
 
 // File returns the file where the error was generated.
-func (e *Err) File() string {
+func (e *xerr) File() string {
 	return e.file
 }
 
 // Line returns the line where the error was generated.
-func (e *Err) Line() int {
+func (e *xerr) Line() int {
 	return e.line
 }
 
-// Is returns true if the error code matches the given code, false otherwise.
-func (e *Err) Is(code int) bool {
-	return e.code == code
+// Is returns true if the error matches the wrapped error (if there is one), false otherwise.
+func (e *xerr) Is(err error) bool {
+	if e.wrappedErr == nil {
+		return false
+	}
+	return errors.Is(err, e.wrappedErr)
 }
 
 // MarshalJSON marshals the error to JSON.
-func (e *Err) MarshalJSON() ([]byte, error) {
-	jsonError := jsonErr{
+func (e *xerr) MarshalJSON() ([]byte, error) {
+	jsonError := jsonXErr{
 		Code:    e.code,
 		Message: e.message,
 	}
@@ -158,7 +202,7 @@ func (e *Err) MarshalJSON() ([]byte, error) {
 }
 
 // String returns the error (including the code, attributes and any caller information) represented as a JSON string.
-func (e *Err) String() string {
+func (e *xerr) String() string {
 	str, err := e.MarshalJSON()
 	if err != nil {
 		return fmt.Sprintf("failed to marshal error to JSON: %s", err.Error())
@@ -166,8 +210,8 @@ func (e *Err) String() string {
 	return string(str)
 }
 
-// With adds an attribute to the error and returns itself.
-func (e *Err) With(key string, value any) *Err {
+// WithAttr adds an attribute to the error and returns itself.
+func (e *xerr) WithAttr(key string, value any) Error {
 	if e.attrs == nil {
 		e.attrs = make(map[string]any)
 	}
@@ -176,7 +220,7 @@ func (e *Err) With(key string, value any) *Err {
 }
 
 // WithAttrs adds attributes to the error and returns itself.
-func (e *Err) WithAttrs(attrs map[string]any) *Err {
+func (e *xerr) WithAttrs(attrs map[string]any) Error {
 	if e.attrs == nil {
 		e.attrs = make(map[string]any)
 	}
