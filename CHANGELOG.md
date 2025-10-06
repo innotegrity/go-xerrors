@@ -4,6 +4,10 @@
 
 No unreleased changes
 
+## v0.3.2 (Released 2025-10-06)
+
+* Fixed bug when marshalling wrapped error to JSON
+  
 ## v0.3.1 (Released 2025-10-06)
 
 * Added `CallerInfo` type and `DefaultCallerInfo` and `GetCallerInfo` functions

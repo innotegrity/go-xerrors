@@ -149,7 +149,7 @@ func (e *xerr) Error() string {
 	return e.message
 }
 
-// Is returns true if the error matches the wrapped error (if there is one), false otherwise.
+// Is returns true if the error matches the wrapped error in this object (if there is one) or false otherwise.
 func (e *xerr) Is(err error) bool {
 	if e.wrappedErr == nil {
 		return false
@@ -167,7 +167,7 @@ func (e *xerr) MarshalJSON() ([]byte, error) {
 	}
 	if _, ok := e.wrappedErr.(Error); !ok {
 		jsonError.WrappedError = &jsonStdError{
-			Message: e.Error(),
+			Message: e.wrappedErr.Error(),
 		}
 	}
 	if e.attrs != nil {
