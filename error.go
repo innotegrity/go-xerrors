@@ -5,38 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"runtime"
-	"sync"
 )
-
-const (
-	_unknownFilename = "???"
-)
-
-var (
-	_captureCaller = false
-	_callerMutex   sync.Mutex
-)
-
-// CaptureCaller controls whether the caller file and line are captured when a new error is generated.
-//
-// This function enables or disables the capture of the caller information globally for this package.  This call is
-// thread-safe.
-func CaptureCaller(enable bool) {
-	_callerMutex.Lock()
-	_captureCaller = enable
-	_callerMutex.Unlock()
-}
-
-// getCaller is a helper function to fetch caller information for an error.
-func getCaller(skip int) (file string, line int) {
-	_, file, line, ok := runtime.Caller(skip + 1)
-	if !ok {
-		file = "???"
-		line = 0
-	}
-	return file, line
-}
 
 // Error is the interface implemented by extended errors.
 type Error interface {
@@ -46,17 +15,14 @@ type Error interface {
 	// Attrs should return a map of attributes associated with the error.
 	Attrs() map[string]any
 
+	// Caller should return the information on where the error was generated.
+	Caller() CallerInfo
+
 	// Code should return the error code.
 	Code() int
 
-	// File should return the file where the error was generated.
-	File() string
-
 	// Is should return true if the wrapped error inside the object matches the given error, false otherwise.
 	Is(error) bool
-
-	// Line should return the line where the error was generated.
-	Line() int
 
 	// String should return a string representation of the error.
 	//
@@ -71,33 +37,42 @@ type Error interface {
 	WithAttrs(attrs map[string]any) Error
 }
 
-// xerr is a struct that implements the Error interface.
+// xerr is a struct that implements the [Error] interface.
 type xerr struct {
 	// unexported variables
 	attrs      map[string]any // error attributes
+	caller     *CallerInfo    // information on where the error was generated
 	code       int            // the error code
-	file       string         // the file where the error was generated
-	line       int            // the line where the error was generated
 	message    string         // the error message
 	wrappedErr error          // the wrapped error, if any
 }
 
-// jsonXErr is a version of [Err] that is used to marshal an Err object to JSON.
+// jsonXErr is a version of [xerr] that is used to marshal the object to JSON.
 type jsonXErr struct {
 	// Attrs is a map of attributes associated with the error.
 	Attrs map[string]any `json:"attrs,omitempty"`
 
+	// Caller contains the information on where the error was generated.
+	Caller *CallerInfo `json:"caller,omitempty"`
+
 	// Code is the error code.
 	Code int `json:"code"`
 
-	// File is the file where the error was generated.
-	File *string `json:"file,omitempty"`
-
-	// Line is the line where the error was generated.
-	Line *int `json:"line,omitempty"`
-
 	// Message is the error message.
 	Message string `json:"message"`
+
+	// WrappedError is the wrapped error, if any.
+	WrappedError error `json:"wrappedError,omitempty"`
+}
+
+// jsonStdErr is a version of a standard Go error that is used to marshal the object to JSON.
+type jsonStdError struct {
+	// Message is the error message.
+	Message string `json:"message"`
+}
+
+func (e *jsonStdError) Error() string {
+	return e.Message
 }
 
 // New creates a new [Error] with the given code and message.
@@ -107,7 +82,7 @@ func New(code int, message string) Error {
 		message: message,
 	}
 	if _captureCaller {
-		xerr.file, xerr.line = getCaller(1)
+		xerr.caller = GetCallerInfo(0)
 	}
 	return xerr
 }
@@ -119,7 +94,7 @@ func Newf(code int, format string, args ...any) Error {
 		message: fmt.Sprintf(format, args...),
 	}
 	if _captureCaller {
-		xerr.file, xerr.line = getCaller(1)
+		xerr.caller = GetCallerInfo(0)
 	}
 	return xerr
 }
@@ -132,7 +107,7 @@ func Wrap(code int, err error, message string) Error {
 		wrappedErr: err,
 	}
 	if _captureCaller {
-		xerr.file, xerr.line = getCaller(1)
+		xerr.caller = GetCallerInfo(0)
 	}
 	return xerr
 }
@@ -145,7 +120,7 @@ func Wrapf(code int, err error, format string, args ...any) Error {
 		wrappedErr: err,
 	}
 	if _captureCaller {
-		xerr.file, xerr.line = getCaller(1)
+		xerr.caller = GetCallerInfo(0)
 	}
 	return xerr
 }
@@ -153,6 +128,15 @@ func Wrapf(code int, err error, format string, args ...any) Error {
 // Attrs returns a map of attributes associated with the error.
 func (e *xerr) Attrs() map[string]any {
 	return e.attrs
+}
+
+// Caller returns the information on where the error was generated.
+func (e *xerr) Caller() CallerInfo {
+	if e.caller == nil {
+		caller := DefaultCallerInfo()
+		return *caller
+	}
+	return *e.caller
 }
 
 // Code returns the error code.
@@ -163,16 +147,6 @@ func (e *xerr) Code() int {
 // Error returns the error message.
 func (e *xerr) Error() string {
 	return e.message
-}
-
-// File returns the file where the error was generated.
-func (e *xerr) File() string {
-	return e.file
-}
-
-// Line returns the line where the error was generated.
-func (e *xerr) Line() int {
-	return e.line
 }
 
 // Is returns true if the error matches the wrapped error (if there is one), false otherwise.
@@ -186,22 +160,24 @@ func (e *xerr) Is(err error) bool {
 // MarshalJSON marshals the error to JSON.
 func (e *xerr) MarshalJSON() ([]byte, error) {
 	jsonError := jsonXErr{
-		Code:    e.code,
-		Message: e.message,
+		Caller:       e.caller,
+		Code:         e.code,
+		Message:      e.message,
+		WrappedError: e.wrappedErr,
+	}
+	if _, ok := e.wrappedErr.(Error); !ok {
+		jsonError.WrappedError = &jsonStdError{
+			Message: e.Error(),
+		}
 	}
 	if e.attrs != nil {
+		jsonError.Attrs = make(map[string]any)
 		maps.Copy(jsonError.Attrs, e.attrs)
-	}
-	if e.file != _unknownFilename && e.file != "" {
-		jsonError.File = &e.file
-	}
-	if e.line >= 1 {
-		jsonError.Line = &e.line
 	}
 	return json.Marshal(jsonError)
 }
 
-// String returns the error (including the code, attributes and any caller information) represented as a JSON string.
+// String returns the error (including the code, attributes, caller and wrapped error) represented as a JSON string.
 func (e *xerr) String() string {
 	str, err := e.MarshalJSON()
 	if err != nil {
