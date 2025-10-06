@@ -4,7 +4,7 @@
 
 No unreleased changes
 
-## v0.3.0 (Released 2025-10-06)
+## v0.3.1 (Released 2025-10-06)
 
 * Added `CallerInfo` type and `DefaultCallerInfo` and `GetCallerInfo` functions
 * Enhanced `MarshalJSON` to include wrapped errors
