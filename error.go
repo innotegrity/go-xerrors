@@ -160,14 +160,15 @@ func (e *xerr) Is(err error) bool {
 // MarshalJSON marshals the error to JSON.
 func (e *xerr) MarshalJSON() ([]byte, error) {
 	jsonError := jsonXErr{
-		Caller:       e.caller,
-		Code:         e.code,
-		Message:      e.message,
-		WrappedError: e.wrappedErr,
+		Caller:  e.caller,
+		Code:    e.code,
+		Message: e.message,
 	}
-	if _, ok := e.wrappedErr.(Error); !ok {
-		jsonError.WrappedError = &jsonStdError{
-			Message: e.wrappedErr.Error(),
+	if e.wrappedErr != nil {
+		if _, ok := e.wrappedErr.(Error); !ok {
+			jsonError.WrappedError = &jsonStdError{
+				Message: e.wrappedErr.Error(),
+			}
 		}
 	}
 	if e.attrs != nil {

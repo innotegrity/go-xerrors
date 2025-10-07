@@ -4,6 +4,10 @@
 
 No unreleased changes
 
+## v0.3.3 (Released 2025-10-07)
+
+* Fixed nil pointer bug with wrapped errors
+  
 ## v0.3.2 (Released 2025-10-06)
 
 * Fixed bug when marshalling wrapped error to JSON
